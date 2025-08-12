@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Журнал выдач — План/Факт</title>
+<style>
+  :root{--bg:#0b1220;--card:#162033;--text:#e5e7eb;--muted:#9ca3af;--accent:#38bdf8;--ok:#22c55e;--bad:#ef4444;--shadow:0 10px 24px rgba(0,0,0,.35);}
+  *{box-sizing:border-box;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  body{margin:0;background:linear-gradient(180deg,#070d17,#0b1220);color:var(--text)}
+  .wrap{max-width:1000px;margin:18px auto;padding:14px}
+  h1{font-size:20px;margin:0 0 10px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  .field{min-width:180px;flex:1}
+  .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+  .field input,.field select{width:100%;padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:#0e1726;color:var(--text)}
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .card{background:var(--card);padding:12px;border-radius:12px;box-shadow:var(--shadow);border:1px solid rgba(255,255,255,.06)}
+  .label{font-size:12px;color:var(--muted);margin-bottom:4px}
+  .value{font-size:18px;font-weight:700}
+  section{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);padding:12px;border-radius:12px;margin-top:12px;box-shadow:var(--shadow)}
+  h2{margin:0 0 8px;font-size:16px}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:8px;border-bottom:1px solid rgba(255,255,255,.06);font-size:13px;vertical-align:middle}
+  th{text-align:left;color:var(--muted)}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .btn{background:#0ea5e9;border:none;color:white;padding:8px 12px;border-radius:10px;cursor:pointer}
+  .btn.secondary{background:#1f2937}
+  .btn.danger{background:#b33a3a}
+  .tools{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+  .nav{display:flex;gap:8px;align-items:center}
+  .nav .btn{padding:6px 10px}
+  .pill{font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid;display:inline-block}
+  .pill.ok{color:#22c55e;border-color:#22c55e33;background:#22c55e22}
+  .pill.plan{color:#38bdf8;border-color:#38bdf833;background:#38bdf822}
+  @media print{
+    body{background:#fff;color:#000}
+    .wrap{max-width:100%;}
+    section, .card{box-shadow:none;border:1px solid #ddd;background:#fff;color:#000}
+    .btn, .tools, .nav, #jsonArea {display:none}
+    input[type="checkbox"]{transform:scale(1.2)}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Журнал выдач — План/Факт</h1>
+
+  <div class="row">
+    <div class="nav">
+      <button class="btn secondary" id="prevMonth">←</button>
+      <div class="field" style="min-width:220px">
+        <label>Месяц</label>
+        <select id="month"></select>
+      </div>
+      <button class="btn secondary" id="nextMonth">→</button>
+    </div>
+    <div class="field" style="max-width:160px"><label>Валюта</label><input id="currency" value="₸"></div>
+    <div class="tools" style="margin-left:auto">
+      <button class="btn" id="exportCsv">Экспорт CSV (месяц)</button>
+      <button class="btn secondary" onclick="window.print()">Печать / PDF</button>
+      <button class="btn" id="addPlanned">Добавить плановую выдачу</button>
+      <button class="btn" id="addPaidToday">Добавить фактическую на сегодня</button>
+    </div>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="label">Факт за период</div><div class="value" id="factTotal">0 ₸</div></div>
+    <div class="card"><div class="label">План (не оплачено)</div><div class="value" id="planTotal">0 ₸</div></div>
+    <div class="card"><div class="label">Δ План − Факт</div><div class="value" id="delta">0 ₸</div></div>
+  </div>
+
+  <section>
+    <h2>Единый журнал</h2>
+    <table id="tbl-ledger">
+      <thead>
+        <tr><th>Дата</th><th>Сумма</th><th>Примечание</th><th>Статус</th><th>Оплачено?</th><th></th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>WhatsApp‑резюме (по выбранному месяцу)</h2>
+    <pre id="wa"></pre>
+  </section>
+
+  <section>
+    <h2>Сохранение</h2>
+    <div class="tools">
+      <button class="btn" onclick="saveLS()">Сохранить</button>
+      <button class="btn secondary" onclick="loadLS()">Загрузить</button>
+      <button class="btn danger" onclick="resetLS()">Сбросить</button>
+      <button class="btn" onclick="exportJSON()">Экспорт JSON</button>
+      <button class="btn secondary" onclick="importJSON()">Импорт JSON</button>
+    </div>
+    <pre id="jsonArea" contenteditable="true"></pre>
+  </section>
+</div>
+
+<script>
+const fmt = (x,cur) => (Number(x)||0).toLocaleString('ru-RU') + ' ' + (cur||'₸');
+const monthKey = (iso) => (iso||'').slice(0,7);
+const toISO = (d) => new Date(d).toISOString().slice(0,10);
+const RU_MONTHS = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+const ruMonth = (ym) => { const [y,m]=ym.split('-'); return RU_MONTHS[Number(m)-1] + ' ' + y; };
+
+// initial
+const monthList = ["2025-07", "2025-08"];
+const state = {"currency": "₸", "filterMonth": "2025-07", "rows": [{"date": "2025-07-01", "amount": 120000.0, "note": "Санжару на карту прилет ББ", "paid": true}, {"date": "2025-07-02", "amount": 30000.0, "note": "Санжару на карту ", "paid": true}, {"date": "2025-07-02", "amount": 250000.0, "note": "Эмме на Каспий", "paid": true}, {"date": "2025-07-02", "amount": 250000.0, "note": "Эмме на Халык", "paid": true}, {"date": "2025-07-05", "amount": 150000.0, "note": "Эмме на Каспий", "paid": true}, {"date": "2025-07-05", "amount": 150000.0, "note": "Эмме на Халык", "paid": true}, {"date": "2025-07-08", "amount": 1750000.0, "note": "наличными ", "paid": true}, {"date": "2025-07-08", "amount": 125000.0, "note": "Бахтияру на карту", "paid": true}, {"date": "2025-07-08", "amount": 777720.4, "note": "Кредит Халык", "paid": true}, {"date": "2025-07-10", "amount": 850000.0, "note": "наличными ", "paid": true}, {"date": "2025-07-14", "amount": 35000.0, "note": "паркинг", "paid": true}, {"date": "2025-07-14", "amount": 50000.0, "note": "Григорию на карту (представительские расходы)", "paid": true}, {"date": "2025-07-14", "amount": 150000.0, "note": "У Эммы на карте", "paid": true}, {"date": "2025-07-15", "amount": 16000.0, "note": "мобильная связь ", "paid": true}, {"date": "2025-07-15", "amount": 504000.0, "note": "наличными в конверте", "paid": true}, {"date": "2025-07-16", "amount": 70000.0, "note": "Через Терминал на ИИН", "paid": true}, {"date": "2025-07-16", "amount": 1018185.86, "note": "Кредит Халык 2", "paid": true}, {"date": "2025-07-17", "amount": 750000.0, "note": "Наличными для закрытия долларового Займа", "paid": true}, {"date": "2025-07-18", "amount": 1383250.0, "note": "Наличными для закрытия долларового Займа", "paid": true}, {"date": "2025-07-18", "amount": 677000.0, "note": "автокредит Халык банк", "paid": true}, {"date": "2025-07-19", "amount": 220000.0, "note": "Перевод на Халык", "paid": true}, {"date": "2025-07-21", "amount": 478698.51, "note": "Кредит Халык 3", "paid": true}, {"date": "2025-07-22", "amount": 70000.0, "note": "Сейлхану перевод на карту", "paid": true}, {"date": "2025-07-23", "amount": 30000.0, "note": "на Халык ", "paid": true}, {"date": "2025-07-23", "amount": 40000.0, "note": "На Халык Виктории (представительские расходы)", "paid": true}, {"date": "2025-07-24", "amount": 100000.0, "note": "Санжару на карту Жена ББ", "paid": true}, {"date": "2025-07-24", "amount": 50000.0, "note": "на Халык", "paid": true}, {"date": "2025-07-25", "amount": 90000.0, "note": "коммунальные и интернет ", "paid": true}, {"date": "2025-07-25", "amount": 500000.0, "note": "Эмме наличными на домашние дела", "paid": true}, {"date": "2025-07-25", "amount": 47000.0, "note": "Виктории на карту представительские расходы", "paid": true}, {"date": "2025-07-25", "amount": 34900.0, "note": "Акимат вопрос на карту Халык", "paid": true}, {"date": "2025-07-26", "amount": 547600.0, "note": "Акимат вопрос", "paid": true}, {"date": "2025-07-28", "amount": 200000.0, "note": "на карту Халык", "paid": true}, {"date": "2025-07-29", "amount": 200000.0, "note": "ББ Возместил ДБ ", "paid": true}, {"date": "2025-08-02", "amount": 300000.0, "note": "Санжару на карту", "paid": true}, {"date": "2025-08-02", "amount": 500000.0, "note": "Перевод на карту Эмме Каспий", "paid": true}, {"date": "2025-08-02", "amount": 70000.0, "note": "Сейлхану перевод на карту", "paid": true}, {"date": "2025-08-02", "amount": 130000.0, "note": "Перевод на карту Эмме Халык", "paid": true}, {"date": "2025-08-05", "amount": 5000.0, "note": "По счету Каспий Бахытсервис", "paid": true}, {"date": "2025-08-05", "amount": 50000.0, "note": "На карту Халыка", "paid": true}, {"date": "2025-08-07", "amount": 303000.0, "note": "Аренда Квартиры", "paid": true}, {"date": "2025-08-07", "amount": 97000.0, "note": "На Халык Эмме", "paid": true}, {"date": "2025-08-07", "amount": 600000.0, "note": "Аренда Квартиры", "paid": true}, {"date": "2025-08-07", "amount": 97000.0, "note": "На Халык Эмме", "paid": true}, {"date": "2025-08-07", "amount": 128718.0, "note": "Налог оплата", "paid": true}, {"date": "2025-08-07", "amount": 9310.01, "note": "Налог оплата", "paid": true}, {"date": "2025-08-09", "amount": 100000.0, "note": "На Каспи Эмме", "paid": true}]};
+
+const els = {
+  month: document.getElementById('month'),
+  prev: document.getElementById('prevMonth'),
+  next: document.getElementById('nextMonth'),
+  currency: document.getElementById('currency'),
+  factTotal: document.getElementById('factTotal'),
+  planTotal: document.getElementById('planTotal'),
+  delta: document.getElementById('delta'),
+  wa: document.getElementById('wa'),
+  jsonArea: document.getElementById('jsonArea'),
+  tblLedger: document.querySelector('#tbl-ledger tbody'),
+  exportCsv: document.getElementById('exportCsv'),
+  addPlanned: document.getElementById('addPlanned'),
+  addPaidToday: document.getElementById('addPaidToday')
+};
+
+function buildMonthOptions(){
+  els.month.innerHTML = monthList.map(m=>`<option value="${m}">${ruMonth(m)}</option>`).join('') + '<option value="ALL">Все месяцы</option>';
+}
+buildMonthOptions();
+els.currency.value = state.currency || '₸';
+els.month.value = state.filterMonth || (monthList[0]||'ALL');
+
+els.month.addEventListener('change', ()=>{ state.filterMonth = els.month.value; render(); });
+els.currency.addEventListener('input', ()=>{ state.currency = els.currency.value; render(); });
+els.prev.addEventListener('click', ()=>{
+  const idx = monthList.indexOf(state.filterMonth);
+  if(idx > 0){ state.filterMonth = monthList[idx-1]; els.month.value = state.filterMonth; render(); }
+});
+els.next.addEventListener('click', ()=>{
+  const idx = monthList.indexOf(state.filterMonth);
+  if(idx >= 0 && idx < monthList.length-1){ state.filterMonth = monthList[idx+1]; els.month.value = state.filterMonth; render(); }
+});
+
+els.addPlanned.addEventListener('click', ()=>{
+  const d = new Date();
+  const base = (state.filterMonth && state.filterMonth!=='ALL') ? (state.filterMonth + '-15') : toISO(d);
+  state.rows.push({date: base, amount: 0, note: '', paid: false});
+  render();
+});
+els.addPaidToday.addEventListener('click', ()=>{
+  const d = new Date();
+  state.rows.push({date: toISO(d), amount: 0, note: '', paid: true});
+  render();
+});
+
+function filtered(list){
+  if(!state.filterMonth || state.filterMonth==='ALL') return [...list].sort((a,b)=> (a.date>b.date?1:-1));
+  return [...list].filter(x=>monthKey(x.date)===state.filterMonth).sort((a,b)=> (a.date>b.date?1:-1));
+}
+
+function totals(){
+  const cur = state.currency || '₸';
+  const rows = filtered(state.rows);
+  const fact = rows.filter(x=>!!x.paid).reduce((s,x)=>s+Number(x.amount||0),0);
+  const plan = rows.filter(x=>!x.paid).reduce((s,x)=>s+Number(x.amount||0),0);
+  const delta = plan - fact;
+  const wa = [
+    `📅 *Месяц:* ${els.month.options[els.month.selectedIndex]?.text || 'Все месяцы'}`,
+    `💰 *Факт (всего):* ${fmt(fact,cur)}`,
+    `🗂️ *План (не оплачено):* ${fmt(plan,cur)}`,
+    `Δ *Разница (План − Факт):* ${fmt(delta,cur)}`,
+  ].join('\\n');
+  return {cur, rows, fact, plan, delta, wa};
+}
+
+function delRow(idx){ state.rows.splice(idx,1); render(); }
+function togglePaid(idx){ state.rows[idx].paid = !state.rows[idx].paid; render(); }
+
+function row(obj, idx){
+  const pill = obj.paid ? '<span class="pill ok">Факт</span>' : '<span class="pill plan">План</span>';
+  return `<tr>
+    <td><input value="${obj.date||''}" oninput="state.rows[${idx}].date=this.value; render();" /></td>
+    <td><input type="number" value="${obj.amount||0}" oninput="state.rows[${idx}].amount=Number(this.value||0); render();" /></td>
+    <td><input value="${obj.note||''}" oninput="state.rows[${idx}].note=this.value; render();" /></td>
+    <td>${pill}</td>
+    <td style="text-align:center"><input type="checkbox" ${obj.paid?'checked':''} onclick="togglePaid(${idx})" /></td>
+    <td style="width:1%"><button class="btn danger" onclick="delRow(${idx})">×</button></td>
+  </tr>`;
+}
+
+function render(){
+  const t = totals();
+  els.tblLedger.innerHTML = t.rows.map((o,i)=> row(o,i)).join('');
+  els.factTotal.textContent = fmt(t.fact, t.cur);
+  els.planTotal.textContent = fmt(t.plan, t.cur);
+  els.delta.textContent = fmt(t.delta, t.cur);
+  els.wa.textContent = t.wa;
+}
+
+// Persistence and export
+function saveLS(){ localStorage.setItem('founder-ledger', JSON.stringify(state)); alert('Сохранено.'); }
+function loadLS(){ const s = localStorage.getItem('founder-ledger'); if(!s) return alert('Нет сохранённых.');
+  try{ Object.assign(state, JSON.parse(s)); els.currency.value = state.currency||'₸'; els.month.value = state.filterMonth||els.month.value; render(); }catch(e){ alert('Ошибка чтения.'); } }
+function resetLS(){ localStorage.removeItem('founder-ledger'); alert('Очищено.'); }
+
+function exportJSON(){ document.getElementById('jsonArea').textContent = JSON.stringify(state, null, 2); }
+function importJSON(){ try{ Object.assign(state, JSON.parse(document.getElementById('jsonArea').textContent)); els.currency.value = state.currency||'₸'; els.month.value = state.filterMonth||els.month.value; render(); alert('Импорт выполнен.'); }catch(e){ alert('Некорректный JSON.'); } }
+
+els.exportCsv.addEventListener('click', ()=>{
+  const cur = state.currency || '₸';
+  const rows = filtered(state.rows);
+  const csvRows = [["Дата","Сумма","Примечание","Статус"]]
+    .concat(rows.map(x=>[x.date, String(x.amount).replace('.',','), x.note||"", x.paid ? "Факт" : "План"]));
+  const csv = csvRows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(';')).join('\\r\\n');
+  const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = (els.month.value==='ALL'?'all-months':els.month.value) + '_ledger.csv';
+  document.body.appendChild(a); a.click(); URL.revokeObjectURL(url); a.remove();
+});
+
+render();
+</script>
+</body>
+</html>
